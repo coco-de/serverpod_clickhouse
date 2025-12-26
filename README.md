@@ -1,8 +1,10 @@
 # Serverpod + ClickHouse 통합 패키지
 
+[![GitHub](https://img.shields.io/badge/GitHub-coco--de%2Fserverpod__clickhouse-blue)](https://github.com/coco-de/serverpod_clickhouse)
+
 PostgreSQL 기반의 Serverpod 서비스에 **ClickHouse 분석 레이어**를 추가합니다.
 
-## 🎯 핵심 아키텍처
+## 핵심 아키텍처
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐
@@ -18,23 +20,87 @@ PostgreSQL 기반의 Serverpod 서비스에 **ClickHouse 분석 레이어**를 �
                     └─────────────────────────────────┘
 ```
 
-## 📦 설치
+## 주요 기능
+
+- **ClickHouse HTTP 클라이언트** - Cloud/Local 지원
+- **이벤트 트래킹** - 배치 버퍼링, 자동 flush
+- **분석 쿼리 빌더** - DAU, WAU, MAU, Funnel, Retention, 경로 분석
+- **BI 이벤트 상수** - 30+ 표준 이벤트 정의
+- **Serverpod Endpoints** - Events, Analytics API
+- **PostgreSQL → ClickHouse 동기화** - FutureCall 기반
+
+## 설치
+
+### 1. 서버 의존성 추가
 
 ```yaml
-# pubspec.yaml
+# my_server/pubspec.yaml
 dependencies:
   serverpod_clickhouse:
-    path: ../serverpod_clickhouse  # 또는 pub.dev 배포 후 버전 지정
+    git:
+      url: https://github.com/coco-de/serverpod_clickhouse.git
 ```
 
-## 🚀 빠른 시작
+### 2. 모듈 등록
 
-### 1. ClickHouse 클라이언트 설정
+```yaml
+# config/generator.yaml
+modules:
+  serverpod_clickhouse:
+    nickname: ch
+```
+
+### 3. ClickHouse 설정
+
+```yaml
+# config/passwords.yaml
+development:
+  clickhouse_host: 'xxx.clickhouse.cloud'
+  clickhouse_database: 'analytics'
+  clickhouse_username: 'default'
+  clickhouse_password: 'your-password'
+  clickhouse_use_ssl: 'true'
+```
+
+### 4. 코드 생성 & 마이그레이션
+
+```bash
+dart pub get
+serverpod generate
+serverpod create-migration
+dart bin/main.dart --apply-migrations
+```
+
+### 5. 서버 초기화
+
+```dart
+// server.dart
+import 'package:serverpod_clickhouse/serverpod_clickhouse.dart';
+
+void run(List<String> args) async {
+  final pod = Serverpod(...);
+  await ClickHouseService.initialize(pod);
+  await pod.start();
+}
+```
+
+### 6. Flutter 클라이언트 사용
+
+```dart
+// 이벤트 추적
+await client.ch.events.track(eventName: 'button_click');
+
+// 분석 조회
+final dau = await client.ch.analytics.getDau(days: 30);
+```
+
+## 빠른 시작 (Serverpod 없이)
+
+### ClickHouse 클라이언트
 
 ```dart
 import 'package:serverpod_clickhouse/serverpod_clickhouse.dart';
 
-// ClickHouse Cloud 연결
 final clickhouse = ClickHouseClient(
   ClickHouseConfig.cloud(
     host: 'xxx.clickhouse.cloud',
@@ -44,30 +110,21 @@ final clickhouse = ClickHouseClient(
   ),
 );
 
-// 연결 테스트
 final connected = await clickhouse.ping();
-print('Connected: $connected');
 ```
 
-### 2. 이벤트 추적
+### 이벤트 추적
 
 ```dart
 final tracker = EventTracker(clickhouse);
 
-// 공통 컨텍스트 설정
-tracker.commonContext = {
-  'app_version': '1.0.0',
-  'device_type': 'mobile',
-};
-
-// 이벤트 추적
+// BI 이벤트 상수 사용
 tracker.track(
-  'button_click',
+  BiEvents.buttonClick,
   userId: 'user123',
-  sessionId: 'session456',
   properties: {
-    'button_name': 'purchase',
-    'screen': 'product_detail',
+    BiEventProps.buttonName: 'purchase',
+    BiEventProps.screenName: 'product_detail',
   },
 );
 
@@ -82,54 +139,114 @@ tracker.trackConversion(
   currency: 'KRW',
 );
 
-// 종료 시 남은 이벤트 전송
 await tracker.shutdown();
 ```
 
-### 3. 분석 쿼리
+### 분석 쿼리
 
 ```dart
 final analytics = AnalyticsQueryBuilder(clickhouse);
 
 // DAU
 final dau = await analytics.dau(days: 30);
-for (final row in dau.rows) {
-  print('${row['date']}: ${row['dau']} users');
-}
 
 // 퍼널 분석
 final funnel = await analytics.funnel(
   steps: ['sign_up_started', 'email_entered', 'sign_up_completed'],
   days: 7,
 );
-print(funnel); // 단계별 전환율 출력
 
-// 리텐션
+// N-Day 리텐션
 final retention = await analytics.nDayRetention(
   cohortEvent: 'sign_up_completed',
   returnEvent: 'app_opened',
   days: [1, 7, 30],
 );
 
-// 매출
-final revenue = await analytics.dailyRevenue(days: 30);
+// 경로 분석 (Sankey Diagram)
+final paths = await analytics.navigationPaths(days: 7, minCount: 10);
 ```
 
-### 4. 스키마 초기화
+## 지원하는 분석 쿼리
+
+### 기본 지표
+
+| 메서드 | 설명 |
+|--------|------|
+| `dau()` | 일별 활성 사용자 |
+| `wau()` | 주별 활성 사용자 |
+| `mau()` | 월별 활성 사용자 |
+| `eventCounts()` | 이벤트별 발생 횟수 |
+
+### 퍼널 & 리텐션
+
+| 메서드 | 설명 |
+|--------|------|
+| `funnel()` | 퍼널 분석 (windowFunnel) |
+| `cohortRetention()` | 코호트 리텐션 |
+| `nDayRetention()` | N일 리텐션 (Day 1/7/30) |
+
+### 매출 분석
+
+| 메서드 | 설명 |
+|--------|------|
+| `dailyRevenue()` | 일별 매출 |
+| `topProductsByRevenue()` | 상품별 매출 TOP N |
+| `arpu()` | 사용자당 평균 매출 |
+
+### 경로 분석 (Sankey Diagram)
+
+| 메서드 | 설명 |
+|--------|------|
+| `navigationPaths()` | 화면 이동 경로 (from → to) |
+| `flowStepConversion()` | 플로우별 단계 전환율 |
+| `dropOffPoints()` | 이탈 지점 분석 |
+| `entryPoints()` | 앱 진입점 분석 |
+| `userJourney()` | 개별 사용자 경로 시퀀스 |
+| `flowCompletionRates()` | 플로우 완료율 |
+| `screensPerSession()` | 세션별 화면 수 |
+
+### 커스텀
+
+| 메서드 | 설명 |
+|--------|------|
+| `custom()` | 커스텀 SQL 실행 |
+
+## BI 이벤트 상수
+
+표준화된 이벤트 이름과 속성 키를 제공합니다.
 
 ```dart
-final schema = SchemaManager(clickhouse);
+// 이벤트 이름
+BiEvents.appOpened
+BiEvents.screenView
+BiEvents.buttonClick
+BiEvents.signUpStarted
+BiEvents.purchaseCompleted
+// ... 30+ 이벤트
 
-// 모든 기본 테이블 생성
-await schema.initializeSchema();
-
-// 또는 개별 테이블 생성
-await schema.createEventsTable(ttlDays: 180);
-await schema.createOrdersTable(ttlDays: 365 * 2);
-await schema.createUsersTable();
+// 속성 키
+BiEventProps.screenName
+BiEventProps.buttonName
+BiEventProps.flowName
+BiEventProps.stepIndex
+// ... 다수 속성
 ```
 
-## 📊 기본 테이블 스키마
+자세한 내용은 [BI 이벤트 가이드](docs/BI_EVENTS_GUIDE.md)를 참조하세요.
+
+## Flutter 통합
+
+Flutter 앱에서 자동으로 이벤트를 추적하는 Observer 패턴을 제공합니다:
+
+- **ClickHouseNavigatorObserver** - GoRouter 화면 이동 자동 추적
+- **ClickHouseBlocObserver** - BLoC 상태 변경/에러 추적
+- **ClickHouseLifecycleObserver** - 앱 라이프사이클 추적
+- **ClickHouseDioInterceptor** - API 호출 성능 추적
+
+자세한 구현 예시는 [BI 이벤트 가이드 - Flutter 통합](docs/BI_EVENTS_GUIDE.md#flutter-통합-가이드)을 참조하세요.
+
+## 기본 테이블 스키마
 
 ### events (행동 이벤트)
 
@@ -154,136 +271,58 @@ await schema.createUsersTable();
 | status | LowCardinality(String) | 상태 |
 | created_at | DateTime64(3) | 생성 시간 |
 
-## 🔧 Serverpod 통합
-
-### 서비스 클래스
-
-```dart
-// lib/src/services/clickhouse_service.dart
-class ClickHouseService {
-  static ClickHouseService? _instance;
-  static ClickHouseService get instance => _instance ??= ClickHouseService._();
-  
-  late final ClickHouseClient client;
-  late final EventTracker tracker;
-  late final AnalyticsQueryBuilder analytics;
-  
-  Future<void> initialize(/* config */) async {
-    client = ClickHouseClient(ClickHouseConfig.cloud(...));
-    tracker = EventTracker(client);
-    analytics = AnalyticsQueryBuilder(client);
-  }
-}
-```
-
-### Endpoint 예시
-
-```dart
-class EventsEndpoint extends Endpoint {
-  Future<void> track(Session session, String eventName, Map<String, dynamic>? properties) async {
-    final userId = await session.auth.authenticatedUserId;
-    ClickHouseService.instance.tracker.track(
-      eventName,
-      userId: userId?.toString(),
-      properties: properties ?? {},
-    );
-  }
-}
-
-class AnalyticsEndpoint extends Endpoint {
-  Future<List<Map<String, dynamic>>> getDau(Session session, int days) async {
-    final result = await ClickHouseService.instance.analytics.dau(days: days);
-    return result.rows;
-  }
-}
-```
-
-자세한 예시는 [example/serverpod_integration.dart](example/serverpod_integration.dart)를 참고하세요.
-
-## 📈 지원하는 분석 쿼리
-
-| 메서드 | 설명 |
-|--------|------|
-| `dau()` | 일별 활성 사용자 |
-| `wau()` | 주별 활성 사용자 |
-| `mau()` | 월별 활성 사용자 |
-| `eventCounts()` | 이벤트별 발생 횟수 |
-| `funnel()` | 퍼널 분석 (windowFunnel) |
-| `cohortRetention()` | 코호트 리텐션 |
-| `nDayRetention()` | N일 리텐션 (Day 1/7/30) |
-| `dailyRevenue()` | 일별 매출 |
-| `topProductsByRevenue()` | 상품별 매출 TOP N |
-| `arpu()` | 사용자당 평균 매출 |
-| `custom()` | 커스텀 SQL |
-
-## 🔄 PostgreSQL → ClickHouse 동기화
+## PostgreSQL → ClickHouse 동기화
 
 ### 옵션 1: ClickPipes (권장)
 
 ClickHouse Cloud의 관리형 CDC 서비스를 사용합니다.
 
-### 옵션 2: 배치 동기화
+### 옵션 2: FutureCall 배치 동기화
 
 ```dart
-class SyncToClickHouseTask extends ScheduledTask {
-  @override
-  Duration get interval => Duration(minutes: 5);
-  
-  @override
-  Future<void> run(Session session) async {
-    final syncUtility = SyncUtility(ClickHouseService.instance.client);
-    
-    final orders = await Order.db.find(session, where: (t) => t.updatedAt > lastSync);
-    await syncUtility.syncOrders(orders.map((o) => o.toMap()).toList());
-  }
-}
+// 패키지에 포함된 SyncToClickHouseCall 사용
+await SyncToClickHouseCall.syncOrders(session, lastSyncTime);
 ```
 
 ### 옵션 3: Debezium + Kafka
 
 대규모 실시간 동기화가 필요한 경우.
 
-## 🎓 Unibook RBA 적용 예시
-
-```dart
-// 학습 행동 추적
-tracker.track('page_read', userId: studentId, properties: {
-  'book_id': bookId,
-  'page_number': pageNumber,
-  'duration_seconds': duration,
-});
-
-// 학습 완료 분석
-final completion = await analytics.custom('''
-  SELECT 
-    book_id,
-    user_id,
-    count(DISTINCT page_number) AS pages_read,
-    sum(JSONExtractInt(properties, 'duration_seconds')) AS total_duration
-  FROM events
-  WHERE event_name = 'page_read'
-    AND timestamp >= now() - INTERVAL 30 DAY
-  GROUP BY book_id, user_id
-''');
-```
-
-## 📁 프로젝트 구조
+## 프로젝트 구조
 
 ```
 serverpod_clickhouse/
 ├── lib/
-│   ├── serverpod_clickhouse.dart    # 라이브러리 export
+│   ├── serverpod_clickhouse.dart      # 라이브러리 export
 │   └── src/
-│       ├── clickhouse_client.dart   # HTTP 클라이언트
-│       ├── event_tracker.dart       # 이벤트 배치 전송
-│       ├── analytics_queries.dart   # 분석 쿼리 빌더
-│       └── schema_manager.dart      # 스키마 관리
+│       ├── business/                   # 비즈니스 로직
+│       │   ├── clickhouse_client.dart  # HTTP 클라이언트
+│       │   ├── event_tracker.dart      # 이벤트 배치 전송
+│       │   ├── analytics_queries.dart  # 분석 쿼리 빌더
+│       │   ├── schema_manager.dart     # 스키마 관리
+│       │   └── bi_events.dart          # BI 이벤트 상수
+│       ├── endpoints/                  # Serverpod API
+│       │   ├── clickhouse_events_endpoint.dart
+│       │   └── clickhouse_analytics_endpoint.dart
+│       ├── service/                    # 서비스 레이어
+│       │   └── clickhouse_service.dart
+│       ├── future_calls/               # 동기화 작업
+│       │   └── sync_to_clickhouse_call.dart
+│       └── models/                     # Serverpod 모델
+│           └── *.spy.yaml
+├── docs/
+│   └── BI_EVENTS_GUIDE.md              # BI 이벤트 상세 가이드
 ├── example/
-│   └── serverpod_integration.dart   # Serverpod 통합 예시
-├── pubspec.yaml
-└── README.md
+│   └── serverpod_integration.dart      # 통합 예시
+├── config/
+│   └── generator.yaml                  # Serverpod 모듈 설정
+└── pubspec.yaml
 ```
 
-## 📄 License
+## 문서
+
+- [BI 이벤트 가이드](docs/BI_EVENTS_GUIDE.md) - 이벤트 정의, Flutter 통합, 경로 분석
+
+## License
 
 MIT
